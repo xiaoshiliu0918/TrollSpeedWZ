@@ -30,6 +30,9 @@ TrollSpeed_FILES += $(wildcard sources/kfd/*.m)
 TrollSpeed_FILES += $(wildcard sources/kfd/*.c)
 
 TrollSpeed_CFLAGS += -fobjc-arc
+# theos 的 vendor/include 里有 libroot.h，前缀头会把它 import 进来并直接 #error
+# （要求改用 roothide API）。TrollStore 场景不需要路径重定向，关掉即可。
+TrollSpeed_CFLAGS += -DDISABLE_PATH_REDIRECTION
 TrollSpeed_CFLAGS += -Iheaders
 TrollSpeed_CFLAGS += -Isources
 TrollSpeed_CFLAGS += -Isources/KIF
