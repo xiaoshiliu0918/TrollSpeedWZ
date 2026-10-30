@@ -8,7 +8,13 @@
 
 #import <Foundation/Foundation.h>
 
-/// 是否已经探测过（用于 HUD 决定显示调试文本还是网速）
+// 关键：HUDRootViewController.mm 是 ObjC++，若不加 extern "C"，
+// 这里的声明会按 C++ 规则改名，而 wz_kfd.m 按 C 编译，链接时符号对不上。
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/// 是否已经进入调试显示模式
 BOOL WZProbeEnabled(void);
 
 /// 当前探测状态，短字符串，直接塞进悬浮窗
@@ -16,3 +22,7 @@ NSString *WZProbeStatus(void);
 
 /// 启动后台探测线程（幂等）
 void WZProbeStart(void);
+
+#ifdef __cplusplus
+}
+#endif

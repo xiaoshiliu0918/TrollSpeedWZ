@@ -62,15 +62,14 @@ jobs:
           cd $GITHUB_WORKSPACE/TrollSpeed
           echo "PKG_VERSION=$(./get-version.sh)" >> $GITHUB_ENV
 
-      # 只构建 TrollStore 用的 .tipa。
-      # 原流程里还有 roothide / rootless 的 gmake package，
-      # 那两条是给越狱设备出 deb 的，roothide 的 libroot.h 版本不匹配会直接 #error，
-      # 一旦失败就会跳过 artifact 上传，所以这里移除。
+      # 用 theos 构建（Makefile 是通配符，sources/kfd/ 下的新文件会自动收录）。
+      # 不用 ./build.sh（Xcode 工程的文件列表写死在 project.pbxproj 里，新文件不会参与编译）。
+      # 也不带 THEOS_PACKAGE_SCHEME，避免 roothide 的 libroot.h 版本冲突。
       - name: Build tipa
         run: |
           cd $GITHUB_WORKSPACE/TrollSpeed
           ./gen-control.sh
-          ./build.sh
+          FINALPACKAGE=1 gmake package
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
