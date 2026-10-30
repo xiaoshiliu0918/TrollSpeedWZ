@@ -17,7 +17,8 @@
 
 #import <dispatch/dispatch.h>
 #import <mach/mach.h>
-#import <mach/mach_vm.h>
+// iOS SDK 的 mach/mach_vm.h 是 #error 屏蔽的，只能用 vm_map.h 里的 vm_* 系列
+#import <mach/vm_map.h>
 #import <mach/vm_region.h>
 #import <pthread.h>
 #import <stdarg.h>
@@ -204,9 +205,9 @@ static int wz_attach(pid_t pid)
 static uint64_t wz_read_u64(mach_port_t task, uint64_t addr)
 {
     uint64_t val = 0;
-    mach_vm_size_t out = 0;
-    kern_return_t kr = mach_vm_read_overwrite(task, addr, sizeof(val),
-                                              (mach_vm_address_t)&val, &out);
+    vm_size_t out = 0;
+    kern_return_t kr = vm_read_overwrite(task, (vm_address_t)addr, sizeof(val),
+                                         (vm_address_t)&val, &out);
     if (kr != KERN_SUCCESS) return 0;
     return val;
 }
@@ -215,25 +216,27 @@ static void wz_probe_target_image(void)
 {
     if (g_target_task == MACH_PORT_NULL) return;
 
-    mach_vm_address_t addr = 0;
-    mach_vm_size_t size = 0;
+    vm_address_t addr = 0;
+    vm_size_t size = 0;
     vm_region_basic_info_data_64_t info;
     mach_port_t object_name = MACH_PORT_NULL;
     mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
 
-    kern_return_t kr = mach_vm_region(g_target_task, &addr, &size,
-                                      VM_REGION_BASIC_INFO_64,
-                                      (vm_region_info_t)&info, &count, &object_name);
+    kern_return_t kr = vm_region_64(g_target_task, &addr, &size,
+                                    VM_REGION_BASIC_INFO_64,
+                                    (vm_region_info_t)&info, &count, &object_name);
 
     if (kr != KERN_SUCCESS) {
-        wz_log("region: mach_vm_region failed kr=%d", kr);
+        wz_log("region: vm_region_64 failed kr=%d", kr);
         return;
     }
 
-    wz_log("region: first addr=0x%llx size=0x%llx prot=%d", (uint64_t)addr, (uint64_t)size, info.protection);
+    wz_log("region: first addr=0x%llx size=0x%llx prot=%d",
+           (unsigned long long)addr, (unsigned long long)size, info.protection);
 
     uint64_t magic = wz_read_u64(g_target_task, addr);
-    wz_log("region: magic@0x%llx = 0x%016llx", (uint64_t)addr, magic);
+    wz_log("region: magic@0x%llx = 0x%016llx",
+           (unsigned long long)addr, (unsigned long long)magic);
 
     uint32_t m32 = (uint32_t)(magic & 0xFFFFFFFF);
     if (m32 == 0xFEEDFACF || m32 == 0xFEEDFACE) {
