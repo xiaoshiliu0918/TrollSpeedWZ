@@ -130,6 +130,15 @@ void kread_sem_open_find_proc(struct kfd* kfd)
             return;
         }
 
+        /*
+         * 内核里合法 pid 远小于这个上限。越界说明这个"proc"根本不是 proc，
+         * 继续沿着它的 le_prev 走就会读到野地址。
+         */
+        if ((pid < 0) || (pid > 200000)) {
+            print_failure("find_proc: pid=%d 不合理，停止遍历", pid);
+            break;
+        }
+
         proc_kaddr = kget_u64(proc__p_list__le_prev, proc_kaddr);
     }
 
