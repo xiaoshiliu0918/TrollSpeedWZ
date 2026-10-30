@@ -101,3 +101,5 @@ jobs:
             TrollSpeed/packages/TrollSpeed_*.tipa
             TrollSpeed/packages/TrollSpeed+AppIntents16_*.tipa
             TrollSpeed/packages/ch.xxtou.hudapp.jb_*.deb
+
+# fork: TrollSpeedWZ — kfd HUD research build
