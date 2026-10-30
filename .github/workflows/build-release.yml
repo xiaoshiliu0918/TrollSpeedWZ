@@ -47,59 +47,34 @@ jobs:
           ref: master
           path: ${{ env.THEOS }}/sdks
 
+      # 关键改动：构建本 fork，而不是上游 Lessica/TrollSpeed
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          repository: Lessica/TrollSpeed
-          ref: main
+          repository: ${{ github.repository }}
+          ref: ${{ github.ref_name }}
           path: TrollSpeed
           submodules: recursive
 
       - name: Setup build environment
         run: |
-          echo "Available SDKs: $(find $THEOS/sdks -name "*.sdk" -maxdepth 1 -print)"
           echo "FINALPACKAGE=1" >> $GITHUB_ENV
           cd $GITHUB_WORKSPACE/TrollSpeed
           echo "PKG_VERSION=$(./get-version.sh)" >> $GITHUB_ENV
 
-      - name: Build package
+      # 只构建 TrollStore 用的 .tipa。
+      # 原流程里还有 roothide / rootless 的 gmake package，
+      # 那两条是给越狱设备出 deb 的，roothide 的 libroot.h 版本不匹配会直接 #error，
+      # 一旦失败就会跳过 artifact 上传，所以这里移除。
+      - name: Build tipa
         run: |
           cd $GITHUB_WORKSPACE/TrollSpeed
           ./gen-control.sh
           ./build.sh
-          THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1 gmake clean package
-          THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 gmake clean package
-          FINALPACKAGE=1 gmake clean package
-
-      - name: Collect symbols
-        run: |
-          cd $GITHUB_WORKSPACE/TrollSpeed
-          find .theos/obj -name "*.dSYM" -print | zip -r packages/TrollSpeed_${{ env.PKG_VERSION }}_symbols.zip -@
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: TrollSpeed_${{ env.PKG_VERSION }}
-          path: |
-            TrollSpeed/packages/TrollSpeed_*.tipa
-            TrollSpeed/packages/TrollSpeed+AppIntents16_*.tipa
-            TrollSpeed/packages/ch.xxtou.hudapp.jb_*.deb
-
-      - name: Upload symbols
-        uses: actions/upload-artifact@v4
-        with:
-          name: TrollSpeed_${{ env.PKG_VERSION }}_symbols
-          path: |
-            TrollSpeed/packages/TrollSpeed_${{ env.PKG_VERSION }}_symbols.zip
-
-      - name: Upload release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ env.PKG_VERSION }}
-          body_path: TrollSpeed/CHANGELOG.md
-          files: |
-            TrollSpeed/packages/TrollSpeed_*.tipa
-            TrollSpeed/packages/TrollSpeed+AppIntents16_*.tipa
-            TrollSpeed/packages/ch.xxtou.hudapp.jb_*.deb
-
-# fork: TrollSpeedWZ — kfd HUD research build
+          name: TrollSpeedWZ_${{ env.PKG_VERSION }}
+          path: TrollSpeed/packages/*.tipa
+          if-no-files-found: error
