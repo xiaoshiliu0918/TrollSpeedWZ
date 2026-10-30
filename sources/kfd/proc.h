@@ -6,6 +6,8 @@
 //
 
 #include <stdio.h>
+#include <stdint.h>
+#include <sys/types.h>
 
 uint64_t getProc(pid_t pid);
 uint64_t getProcByName(char* nm);
