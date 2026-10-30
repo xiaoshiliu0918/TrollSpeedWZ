@@ -20,7 +20,7 @@ uint64_t do_kopen(uint64_t puaf_pages, uint64_t puaf_method, uint64_t kread_meth
 
 void do_kclose(void)
 {
-    kclose((struct kfd*)(_kfd));
+    kclose(_kfd);
 }
 
 void do_kread(u64 kaddr, void* uaddr, u64 size)

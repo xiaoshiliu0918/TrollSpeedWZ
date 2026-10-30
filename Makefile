@@ -35,6 +35,9 @@ TrollSpeed_CFLAGS += -Isources
 TrollSpeed_CFLAGS += -Isources/KIF
 TrollSpeed_CFLAGS += -Isources/kfd
 TrollSpeed_CFLAGS += -Isources/kfd/libkfd
+# libkfd 是漏洞利用代码，大量未使用变量、已弃用的 syscall(2)。
+# theos 默认 -Werror 会把这些当错误，这里只降级不静默。
+TrollSpeed_CFLAGS += -Wno-error
 TrollSpeed_CFLAGS += -include supports/hudapp-prefix.pch
 MainApplication.mm_CCFLAGS += -std=c++14
 
