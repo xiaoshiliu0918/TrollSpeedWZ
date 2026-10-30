@@ -15,8 +15,10 @@
 
 #import "wz_kfd.h"
 
+#import <dispatch/dispatch.h>
 #import <mach/mach.h>
 #import <mach/mach_vm.h>
+#import <mach/vm_region.h>
 #import <pthread.h>
 #import <stdarg.h>
 #import <string.h>
