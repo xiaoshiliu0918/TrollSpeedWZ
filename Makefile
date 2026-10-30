@@ -25,10 +25,16 @@ endif
 # App Intents will be built from Xcode.
 # TrollSpeed_FILES += $(wildcard sources/Intents/*.swift)
 
+# kfd 内核读写模块（SimpleKFD 移植）
+TrollSpeed_FILES += $(wildcard sources/kfd/*.m)
+TrollSpeed_FILES += $(wildcard sources/kfd/*.c)
+
 TrollSpeed_CFLAGS += -fobjc-arc
 TrollSpeed_CFLAGS += -Iheaders
 TrollSpeed_CFLAGS += -Isources
 TrollSpeed_CFLAGS += -Isources/KIF
+TrollSpeed_CFLAGS += -Isources/kfd
+TrollSpeed_CFLAGS += -Isources/kfd/libkfd
 TrollSpeed_CFLAGS += -include supports/hudapp-prefix.pch
 MainApplication.mm_CCFLAGS += -std=c++14
 

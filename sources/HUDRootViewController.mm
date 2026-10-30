@@ -16,6 +16,7 @@
 #import "HUDRootViewController.h"
 #import "HUDBackdropLabel.h"
 #import "TrollSpeed-Swift.h"
+#import "kfd/wz_kfd.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -834,6 +835,20 @@ static const CACornerMask kCornerMaskAll = kCALayerMinXMinYCorner | kCALayerMaxX
 - (void)updateSpeedLabel
 {
     log_debug(OS_LOG_DEFAULT, "updateSpeedLabel");
+
+    // kfd 探测模式：用悬浮窗当调试显示器
+    WZProbeStart();
+    if (WZProbeEnabled()) {
+        NSAttributedString *dbg = [[NSAttributedString alloc]
+            initWithString:WZProbeStatus()
+                attributes:@{ NSFontAttributeName:
+                    [UIFont monospacedDigitSystemFontOfSize:HUD_FONT_SIZE
+                                                     weight:HUD_FONT_WEIGHT] }];
+        [_speedLabel setAttributedText:dbg];
+        [_speedLabel sizeToFit];
+        return;
+    }
+
     NSAttributedString *attributedText;
     if (HUD_DISPLAY_MODE == 1) {
         attributedText = formattedFPSAttributedString(_isFocused);
